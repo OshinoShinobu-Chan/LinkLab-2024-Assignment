@@ -18,5 +18,44 @@ void FLE_nm(const FLEObject& obj)
     //    - [地址] [类型] [符号名]
     //    - 地址使用16位十六进制，左侧补0
 
-    throw std::runtime_error("Not implemented");
+    for (const auto& symbol : obj.symbols) {
+        if (symbol.section.empty()) {
+            continue;
+        }
+
+        size_t addr = symbol.offset;
+        switch (symbol.type) {
+        case SymbolType::GLOBAL:
+            if (symbol.section == ".text") {
+                std::cout << std::hex << std::setfill('0') << std::setw(16) << addr << " T " << symbol.name << std::endl;
+            } else if (symbol.section == ".data") {
+                std::cout << std::hex << std::setfill('0') << std::setw(16) << addr << " D " << symbol.name << std::endl;
+            } else if (symbol.section == ".bss") {
+                std::cout << std::hex << std::setfill('0') << std::setw(16) << addr << " B " << symbol.name << std::endl;
+            } else if (symbol.section == ".rodata") {
+                std::cout << std::hex << std::setfill('0') << std::setw(16) << addr << " R " << symbol.name << std::endl;
+            }
+            break;
+        case SymbolType::LOCAL:
+            if (symbol.section == ".text") {
+                std::cout << std::hex << std::setfill('0') << std::setw(16) << addr << " t " << symbol.name << std::endl;
+            } else if (symbol.section == ".data") {
+                std::cout << std::hex << std::setfill('0') << std::setw(16) << addr << " d " << symbol.name << std::endl;
+            } else if (symbol.section == ".bss") {
+                std::cout << std::hex << std::setfill('0') << std::setw(16) << addr << " b " << symbol.name << std::endl;
+            } else if (symbol.section == ".rodata") {
+                std::cout << std::hex << std::setfill('0') << std::setw(16) << addr << " r " << symbol.name << std::endl;
+            }
+            break;
+        case SymbolType::WEAK:
+            if (symbol.section == ".text") {
+                std::cout << std::hex << std::setfill('0') << std::setw(16) << addr << " W " << symbol.name << std::endl;
+            } else {
+                std::cout << std::hex << std::setfill('0') << std::setw(16) << addr << " V " << symbol.name << std::endl;
+            }
+            break;
+        default:
+            break;
+        }
+    }
 }
