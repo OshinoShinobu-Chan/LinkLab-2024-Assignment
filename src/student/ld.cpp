@@ -83,6 +83,7 @@ FLEObject FLE_ld(const std::vector<FLEObject>& objects)
 
     // merge sections
     for (const auto& obj : objects) {
+        printf("object: %s\n", obj.name.c_str());
         std::map<std::string, Symbol> local_symbols;
         std::map<std::string, size_t> section_offsets;
         for (const auto& [name_, section] : obj.sections) {
@@ -95,6 +96,7 @@ FLEObject FLE_ld(const std::vector<FLEObject>& objects)
         }
 
         for (const auto& symbol : obj.symbols) {
+            printf("symbol: %s, type: %d, section: %s, offset: %lx\n", symbol.name.c_str(), symbol.type, symbol.section.c_str(), symbol.offset);
             if (symbol.type == SymbolType::GLOBAL) {
                 Symbol new_symbol;
                 new_symbol.name = symbol.name;
@@ -123,7 +125,7 @@ FLEObject FLE_ld(const std::vector<FLEObject>& objects)
                 }
             } else if (symbol.type == SymbolType::LOCAL) {
                 if (local_symbols.find(symbol.name) != local_symbols.end()) {
-                    throw std::runtime_error("Multiple definition of strong symbol: " + symbol.name);
+                    throw std::runtime_error("Multiple definition of local symbol: " + symbol.name);
                 } else {
                     Symbol new_symbol;
                     new_symbol.name = symbol.name;
@@ -134,13 +136,16 @@ FLEObject FLE_ld(const std::vector<FLEObject>& objects)
                     local_symbols.insert({ symbol.name, new_symbol });
                 }
             } else {
+                Symbol new_symbol;
+                new_symbol.name = symbol.name;
+                new_symbol.type = symbol.type;
+                new_symbol.section = symbol.section;
+                new_symbol.size = symbol.size;
+                new_symbol.offset = section_offsets[symbol.section] + symbol.offset;
                 if (global_symbols.find(symbol.name) == global_symbols.end()) {
-                    Symbol new_symbol;
-                    new_symbol.name = symbol.name;
-                    new_symbol.type = symbol.type;
-                    new_symbol.section = symbol.section;
-                    new_symbol.size = symbol.size;
                     global_symbols.insert({ symbol.name, new_symbol });
+                } else if (global_symbols[symbol.name].type == SymbolType::UNDEFINED) {
+                    global_symbols[symbol.name] = new_symbol;
                 }
             }
         }
@@ -156,7 +161,7 @@ FLEObject FLE_ld(const std::vector<FLEObject>& objects)
                 new_reloc.addend = reloc.addend;
                 Relocation_ new_reloc_;
                 new_reloc_.write_position = section_offsets[name] + reloc.offset - ENTRY_POINT;
-                printf("symbol: %s, section_offset: %lx, offset: %lx\n", reloc.symbol.c_str(), section_offsets[name], reloc.offset);
+                // printf("symbol: %s, section_offset: %lx, offset: %lx\n", reloc.symbol.c_str(), section_offsets[name], reloc.offset);
                 new_reloc_.reloc = new_reloc;
                 if (local_symbols.find(reloc.symbol) == local_symbols.end()) {
                     global_relocations.push_back(new_reloc_);
@@ -172,7 +177,7 @@ FLEObject FLE_ld(const std::vector<FLEObject>& objects)
     }
 
     // check undefined symbol
-    for (const auto& symbol : exe.symbols) {
+    for (const auto& [name, symbol] : global_symbols) {
         if (symbol.type == SymbolType::UNDEFINED) {
             throw std::runtime_error("Undefined symbol: " + symbol.name);
         }
