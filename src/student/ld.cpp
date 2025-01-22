@@ -5,6 +5,13 @@
 #include <stdexcept>
 #include <vector>
 
+static const size_t ENTRY_POINT = 0x400000;
+
+struct Relocation_ {
+    size_t write_position;
+    Relocation reloc;
+};
+
 bool check_reloc_addr(const Relocation& reloc, size_t addr)
 {
     size_t high;
@@ -17,6 +24,27 @@ bool check_reloc_addr(const Relocation& reloc, size_t addr)
         return high == 0 || high == 0xFFFFFFFF;
     default:
         return true;
+    }
+}
+
+void write_reloc(const Relocation_& reloc, std::vector<uint8_t>& data, size_t addr)
+{
+    if (reloc.reloc.type == RelocationType::R_X86_64_32 || reloc.reloc.type == RelocationType::R_X86_64_32S) {
+        printf("write reloc: %lx, position: %lx\n", addr, reloc.write_position);
+        data[reloc.write_position] = (uint8_t)(addr & 0xFF);
+        data[reloc.write_position + 1] = (uint8_t)((addr >> 8) & 0xFF);
+        data[reloc.write_position + 2] = (uint8_t)((addr >> 16) & 0xFF);
+        data[reloc.write_position + 3] = (uint8_t)((addr >> 24) & 0xFF);
+    } else if (reloc.reloc.type == RelocationType::R_X86_64_PC32) {
+        size_t rel = addr + reloc.reloc.addend - reloc.write_position - ENTRY_POINT;
+        printf("write reloc: %lx, symbol: %s, position: %lx, addr: %lx, addend: %lx, offset: %lx\n",
+            rel, reloc.reloc.symbol.c_str(), reloc.write_position, addr, reloc.reloc.addend, reloc.reloc.offset);
+        data[reloc.write_position] = (uint8_t)(rel & 0xFF);
+        data[reloc.write_position + 1] = (uint8_t)((rel >> 8) & 0xFF);
+        data[reloc.write_position + 2] = (uint8_t)((rel >> 16) & 0xFF);
+        data[reloc.write_position + 3] = (uint8_t)((rel >> 24) & 0xFF);
+    } else {
+        throw std::runtime_error("Unsupported relocation type");
     }
 }
 
@@ -43,7 +71,8 @@ FLEObject FLE_ld(const std::vector<FLEObject>& objects)
     FLEObject exe;
     FLESection load;
     std::map<std::string, Symbol> global_symbols;
-    size_t offset = 0x400000;
+    std::vector<Relocation_> global_relocations = std::vector<Relocation_>();
+    size_t offset = ENTRY_POINT;
     size_t size = 0;
     exe.type = ".exe";
     exe.name = "a.out";
@@ -54,16 +83,17 @@ FLEObject FLE_ld(const std::vector<FLEObject>& objects)
 
     // merge sections
     for (const auto& obj : objects) {
+        std::map<std::string, Symbol> local_symbols;
         std::map<std::string, size_t> section_offsets;
         for (const auto& [name_, section] : obj.sections) {
             load.data.insert(load.data.end(), section.data.begin(), section.data.end());
-            load.relocs.insert(load.relocs.end(), section.relocs.begin(), section.relocs.end());
             section_offsets.insert({ name_, offset });
             printf("section: %s, offset: %lx\n", name_.c_str(), offset);
 
             offset += section.data.size();
             size += section.data.size();
         }
+
         for (const auto& symbol : obj.symbols) {
             if (symbol.type == SymbolType::GLOBAL) {
                 Symbol new_symbol;
@@ -77,7 +107,7 @@ FLEObject FLE_ld(const std::vector<FLEObject>& objects)
                     if (global_symbols[symbol.name].type == SymbolType::WEAK || global_symbols[symbol.name].type == SymbolType::UNDEFINED) {
                         global_symbols[symbol.name] = new_symbol;
                     } else {
-                        throw std::runtime_error("Symbol conflict: " + symbol.name);
+                        throw std::runtime_error("Multiple definition of strong symbol: " + symbol.name);
                     }
                 } else {
                     global_symbols.insert({ symbol.name, new_symbol });
@@ -91,6 +121,52 @@ FLEObject FLE_ld(const std::vector<FLEObject>& objects)
                     new_symbol.size = symbol.size;
                     global_symbols.insert({ symbol.name, new_symbol });
                 }
+            } else if (symbol.type == SymbolType::LOCAL) {
+                if (local_symbols.find(symbol.name) != local_symbols.end()) {
+                    throw std::runtime_error("Multiple definition of strong symbol: " + symbol.name);
+                } else {
+                    Symbol new_symbol;
+                    new_symbol.name = symbol.name;
+                    new_symbol.offset = section_offsets[symbol.section] + symbol.offset;
+                    new_symbol.type = symbol.type;
+                    new_symbol.section = symbol.section;
+                    new_symbol.size = symbol.size;
+                    local_symbols.insert({ symbol.name, new_symbol });
+                }
+            } else {
+                if (global_symbols.find(symbol.name) == global_symbols.end()) {
+                    Symbol new_symbol;
+                    new_symbol.name = symbol.name;
+                    new_symbol.type = symbol.type;
+                    new_symbol.section = symbol.section;
+                    new_symbol.size = symbol.size;
+                    global_symbols.insert({ symbol.name, new_symbol });
+                }
+            }
+        }
+
+        printf("load size: %lx\n", size);
+        // handle local symbols relocation
+        for (const auto& [name, section] : obj.sections) {
+            for (const auto& reloc : section.relocs) {
+                Relocation new_reloc;
+                new_reloc.offset = reloc.offset;
+                new_reloc.symbol = reloc.symbol;
+                new_reloc.type = reloc.type;
+                new_reloc.addend = reloc.addend;
+                Relocation_ new_reloc_;
+                new_reloc_.write_position = section_offsets[name] + reloc.offset - ENTRY_POINT;
+                printf("symbol: %s, section_offset: %lx, offset: %lx\n", reloc.symbol.c_str(), section_offsets[name], reloc.offset);
+                new_reloc_.reloc = new_reloc;
+                if (local_symbols.find(reloc.symbol) == local_symbols.end()) {
+                    global_relocations.push_back(new_reloc_);
+                    continue;
+                }
+                size_t addr = local_symbols[reloc.symbol].offset;
+                if (!check_reloc_addr(reloc, addr)) {
+                    throw std::runtime_error("Relocation address invalid: " + reloc.symbol);
+                }
+                write_reloc(new_reloc_, load.data, addr);
             }
         }
     }
@@ -103,18 +179,18 @@ FLEObject FLE_ld(const std::vector<FLEObject>& objects)
     }
 
     // resolve relocations
-    for (const auto& reloc : load.relocs) {
-        if (global_symbols.find(reloc.symbol) == global_symbols.end()) {
-            throw std::runtime_error("Undefined symbol: " + reloc.symbol);
+    for (const auto& reloc : global_relocations) {
+        size_t addr;
+        if (global_symbols.find(reloc.reloc.symbol) == global_symbols.end()) {
+            throw std::runtime_error("Undefined symbol: " + reloc.reloc.symbol);
+        } else {
+            addr = global_symbols[reloc.reloc.symbol].offset;
         }
-        size_t addr = global_symbols[reloc.symbol].offset;
-        if (!check_reloc_addr(reloc, addr)) {
-            throw std::runtime_error("Relocation address invalid: " + reloc.symbol);
+
+        if (!check_reloc_addr(reloc.reloc, addr)) {
+            throw std::runtime_error("Relocation address invalid: " + reloc.reloc.symbol);
         }
-        load.data[reloc.offset] = (uint8_t)(addr & 0xFF);
-        load.data[reloc.offset + 1] = (uint8_t)((addr >> 8) & 0xFF);
-        load.data[reloc.offset + 2] = (uint8_t)((addr >> 16) & 0xFF);
-        load.data[reloc.offset + 3] = (uint8_t)((addr >> 24) & 0xFF);
+        write_reloc(reloc, load.data, addr);
     }
 
     // erase relocations
